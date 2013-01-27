@@ -21,6 +21,7 @@
   }],
   "main": "./lib/tutor",
   "dependencies": {
+    "browserify": "1.17.x",
     "cheerio": "0.10.x",
     "entities": "0.1.x",
     "request": "2.12.x"

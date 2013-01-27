@@ -15,6 +15,9 @@ lib/%.js: src/%.coffee lib/gatherer
 test/fixtures/%.html: test/fixtures/%
 	@curl "$(shell cat $<)" --output $@ --silent
 
+test/tutor.js:
+	@$(bin)/browserify -e lib/tutor.js -o $@
+
 clean:
 	@rm -rf node_modules
 	@rm -rf test/fixtures

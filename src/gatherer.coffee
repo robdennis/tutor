@@ -6,12 +6,10 @@ symbols   = require './symbols'
 
 gatherer = module.exports
 
-gatherer[name] = require "./gatherer/#{name}" for name in [
-  'card'
-  'languages'
-  'printings'
-  'set'
-]
+gatherer.card       = require './gatherer/card'
+gatherer.languages  = require './gatherer/languages'
+gatherer.printings  = require './gatherer/printings'
+gatherer.set        = require './gatherer/set'
 
 collect_options = (label) -> (callback) ->
   request url: 'http://gatherer.wizards.com/Pages/Default.aspx', (err, res, body) ->
@@ -36,7 +34,10 @@ to_symbol = (alt) ->
   m and "#{to_symbol m[1]}/#{to_symbol m[2]}" or symbols[alt] or alt
 
 gatherer._get_text = (node) ->
-  node.find('img').each -> @replaceWith "{#{to_symbol @attr 'alt'}}"
+  node.find('img').each ->
+    # TODO: make this reusable
+    $ = jQuery ? (x) -> x
+    $(this).replaceWith "{#{to_symbol $(this).attr 'alt'}}"
   node.text().trim()
 
 identity = (value) -> value

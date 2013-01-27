@@ -2,6 +2,7 @@ gatherer  = require './gatherer'
 
 
 tutor = module.exports
+window.tutor = tutor unless typeof window is 'undefined'
 
 tutor[name] = gatherer[name] for name in [
   'formats'
