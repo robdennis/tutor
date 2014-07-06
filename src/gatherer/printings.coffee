@@ -1,7 +1,7 @@
 cheerio   = require 'cheerio'
+_         = require 'underscore'
 
 gatherer  = require '../gatherer'
-load      = require '../load'
 
 
 module.exports = (details, callback) ->
@@ -11,12 +11,12 @@ module.exports = (details, callback) ->
 
 iter = (row, fn) ->
   while row.hasClass 'cardItem'
-    fn row, row.children().toArray().map(cheerio).map(gatherer._get_text)
+    fn row, _.map row.children(), _.compose gatherer._get_text, cheerio
     break if row.next() is row
     row = row.next()
 
 extract = (html) ->
-  $ = load html
+  $ = cheerio.load html
   data =
     legality: {}
     versions: {}

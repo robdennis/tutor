@@ -4,6 +4,8 @@ fs        = require 'fs'
 url       = require 'url'
 
 nock      = require 'nock'
+_         = require 'underscore'
+
 gatherer  = require '../lib/gatherer'
 tutor     = require '..'
 
@@ -12,22 +14,20 @@ wizards = nock gatherer.origin
 card_url = (args...) ->
   gatherer.card.url(args...).substr(gatherer.origin.length)
 
-lower = (text) -> text.toLowerCase()
-upper = (text) -> text.toUpperCase()
+capitalize = (text) -> text.replace /./, (chr) -> chr.toUpperCase()
 
 toSlug = (value) ->
   "#{value}".toLowerCase().replace(/[ ]/g, '-').replace(/[^\w-]/g, '')
 
-eq = (expected, actual) ->
-  assert.strictEqual expected, actual
+eq = assert.strictEqual
 
 nonexistent = {}
 assert_equal = (expected) -> (err, actual) ->
   for own prop, value of expected
     if value isnt nonexistent
       assert.deepEqual actual[prop], value
-    else if Object::hasOwnProperty.call actual, prop
-      throw new Error "unexpected \"#{prop}\" property"
+    else if _.has actual, prop
+      throw new Error """unexpected "#{prop}" property"""
 
 index = (fn, test) -> (done) ->
   wizards.get('/Pages/Default.aspx')
@@ -36,36 +36,46 @@ index = (fn, test) -> (done) ->
     test err, data
     done()
 
+page_ranges =
+  'Eventide':             [0..7]
+  'Future Sight':         [0..7]
+  'Lorwyn':               [0..11]
+  'New Phyrexia':         [0..6]
+  'Rise of the Eldrazi':  [0..9]
+  'Shadowmoor':           [0..11]
+  'Unhinged':             [0..5]
+
 set = (name, test) -> (done) ->
   path = "#{__dirname}/fixtures/sets/#{toSlug name}"
-  wizards.get(url.parse(fs.readFileSync path, 'utf8').path)
-         .replyWithFile(200, "#{path}.html")
-  wizards.get(url.parse(fs.readFileSync "#{path}~basics", 'utf8').path)
-         .replyWithFile(200, "#{path}~basics.html")
+  wizards.get(url.parse(fs.readFileSync "#{path}~checklist", 'utf8').path)
+         .replyWithFile(200, "#{path}~checklist.html")
+  _.each page_ranges[name], (page) ->
+    wizards.get(url.parse(fs.readFileSync "#{path}~#{page}", 'utf8').path)
+           .replyWithFile(200, "#{path}~#{page}.html")
   tutor.set name, (err, cards) ->
     test err, cards
     done()
 
 card = (details, test) -> (done) ->
-  switch typeof details
-    when 'number' then details = id: details
-    when 'string' then details = name: details
+  switch
+    when _.isNumber details then details = id: details
+    when _.isString details then details = name: details
 
   for resource in ['details', 'languages', 'printings']
     parts = [toSlug details.id ? details.name]
     parts.push toSlug details.name if 'id' of details and 'name' of details
     parts.push resource
     wizards
-      .get(card_url resource.replace(/./, upper) + '.aspx', details)
+      .get(card_url "#{capitalize resource}.aspx", details)
       .replyWithFile(200, "#{__dirname}/fixtures/cards/#{parts.join('~')}.html")
     if (pages = details._pages?[resource]) > 1
       for page in [2..pages]
         wizards
-          .get(card_url resource.replace(/./, upper) + '.aspx', details, {page})
+          .get(card_url "#{capitalize resource}.aspx", details, {page})
           .replyWithFile(200, "#{__dirname}/fixtures/cards/#{parts.join('~')}~#{page}.html")
 
   tutor.card details, (err, card) ->
-    (if typeof test is 'function' then test else assert_equal test) err, card
+    (if _.isFunction test then test else assert_equal test) err, card
     done()
 
 
@@ -165,14 +175,15 @@ describe 'tutor.set', ->
   it 'handles consecutive hybrid mana symbols',
     set 'Eventide', (err, cards) ->
       eq cards[54].text, '''
-        {R/W}: Figure of Destiny becomes a 2/2 Kithkin Spirit.
+        {R/W}: Figure of Destiny becomes a Kithkin Spirit with base \
+        power and toughness 2/2.
 
         {R/W}{R/W}{R/W}: If Figure of Destiny is a Spirit, it becomes \
-        a 4/4 Kithkin Spirit Warrior.
+        a Kithkin Spirit Warrior with base power and toughness 4/4.
 
         {R/W}{R/W}{R/W}{R/W}{R/W}{R/W}: If Figure of Destiny is a \
-        Warrior, it becomes an 8/8 Kithkin Spirit Warrior Avatar \
-        with flying and first strike.
+        Warrior, it becomes a Kithkin Spirit Warrior Avatar with base \
+        power and toughness 8/8, flying, and first strike.
       '''
 
   it 'extracts color indicators',
@@ -225,13 +236,13 @@ describe 'tutor.set', ->
 
   it 'extracts hand modifiers',
     set 'Vanguard', (err, cards) ->
-      eq cards[16].name, 'Eladamri'
-      eq cards[16].hand_modifier, -1
+      eq cards[17].name, 'Eladamri'
+      eq cards[17].hand_modifier, -1
 
   it 'extracts life modifiers',
     set 'Vanguard', (err, cards) ->
-      eq cards[16].name, 'Eladamri'
-      eq cards[16].life_modifier, 15
+      eq cards[17].name, 'Eladamri'
+      eq cards[17].life_modifier, 15
 
   it 'includes expansion',
     set 'Lorwyn', (err, cards) ->
@@ -429,16 +440,16 @@ describe 'tutor.card', ->
 
   it 'extracts rulings',
     card 'Ajani Goldmane', (err, card) ->
-      assert.strictEqual card.rulings[0].length, 2
-      assert.strictEqual card.rulings[0][0], '2007-10-01'
-      assert.strictEqual card.rulings[0][1], '''
+      eq card.rulings[0].length, 2
+      eq card.rulings[0][0], '2007-10-01'
+      eq card.rulings[0][1], '''
         The vigilance granted to a creature by the second ability \
         remains until the end of the turn even if the +1/+1 counter \
         is removed.
       '''
-      assert.strictEqual card.rulings[1].length, 2
-      assert.strictEqual card.rulings[1][0], '2007-10-01'
-      assert.strictEqual card.rulings[1][1], '''
+      eq card.rulings[1].length, 2
+      eq card.rulings[1][0], '2007-10-01'
+      eq card.rulings[1][1], '''
         The power and toughness of the Avatar created by the third \
         ability will change as your life total changes.
       '''
@@ -452,7 +463,7 @@ describe 'tutor.card', ->
       codes = Object.keys(expected).sort()
       assert.deepEqual Object.keys(card.languages).sort(), codes
       for code in codes
-        assert.strictEqual card.languages[code].name, expected[code].name
+        eq                 card.languages[code].name, expected[code].name
         assert.deepEqual   card.languages[code].ids,  expected[code].ids
 
   it 'extracts languages',
@@ -483,8 +494,8 @@ describe 'tutor.card', ->
 
   it 'extracts legality info',
     card 'Braids, Cabal Minion', (err, card) ->
-      assert.strictEqual card.legality['Commander'], 'Special: Banned as Commander'
-      assert.strictEqual card.legality['Prismatic'], 'Legal'
+      eq card.legality['Commander'], 'Special: Banned as Commander'
+      eq card.legality['Prismatic'], 'Legal'
 
   it 'parses left side of split card specified by name',
     card 'Fire', name: 'Fire'
@@ -553,25 +564,25 @@ describe 'tutor.card', ->
     #
     for resource in ['details', 'languages', 'printings']
       wizards
-        .get(card_url "#{resource.replace /./, upper}.aspx", name: 'Juzam Djinn')
+        .get(card_url "#{capitalize resource}.aspx", name: 'Juzam Djinn')
         .reply(302, '', 'Location': '/Pages/Search/Default.aspx?name=+[Juzam Djinn]')
         .get('/Pages/Search/Default.aspx?name=+[Juzam%20Djinn]')
         .reply(302, '', 'Location': '/Pages/Card/Details.aspx?multiverseid=159132')
         .get(card_url 'Details.aspx', id: 159132)
         .replyWithFile(200, "#{__dirname}/fixtures/cards/159132~details.html")
-        .get(card_url "#{resource.replace /./, upper}.aspx", name: 'Juzám Djinn')
+        .get(card_url "#{capitalize resource}.aspx", name: 'Juzám Djinn')
         .replyWithFile(200, "#{__dirname}/fixtures/cards/juzam-djinn~#{resource}.html")
 
     tutor.card 'Juzam Djinn', (err, card) ->
-      assert.strictEqual err, null
-      assert.strictEqual card.name, 'Juzám Djinn'
+      eq err, null
+      eq card.name, 'Juzám Djinn'
       done()
 
 
 $ = (command, test) -> (done) ->
   exec "bin/#{command}", (err, stdout, stderr) ->
     if typeof test is 'string'
-      assert.strictEqual stdout, "#{test}\n"
+      eq stdout, "#{test}\n"
     else
       test err, stdout, stderr
     done()
@@ -613,7 +624,8 @@ describe '$ tutor types', ->
 describe '$ tutor set', ->
 
   it 'prints summary of cards in set',
-    $ 'tutor set Alliances | head -n 2', '''
+    $ 'tutor set Alliances | head -n 3', '''
+      Aesthir Glider {3} 2/1 Flying Aesthir Glider can't block.
       Aesthir Glider {3} 2/1 Flying Aesthir Glider can't block.
       Agent of Stromgald {R} 1/1 {R}: Add {B} to your mana pool.
     '''
@@ -622,16 +634,17 @@ describe '$ tutor set', ->
     $ 'tutor set Alliances --format json', (err, stdout) ->
       cards = JSON.parse stdout
       eq cards[0].name, 'Aesthir Glider'
-      eq cards[1].name, 'Agent of Stromgald'
+      eq cards[1].name, 'Aesthir Glider'
+      eq cards[2].name, 'Agent of Stromgald'
 
   it 'handles sets with (one version of) exactly one basic land', #69
     $ 'tutor set "Arabian Nights" --format json', (err, stdout) ->
       cards = JSON.parse stdout
-      eq cards.length, 78
-      eq cards[55].name, 'Mountain'
+      eq cards.length, 92
+      eq cards[62].name, 'Mountain'
 
   it 'handles sets with (multiple versions of) exactly one basic land', #69
-    $ 'tutor set "Fire and Lightning" --format json', (err, stdout) ->
+    $ 'tutor set "Premium Deck Series: Fire and Lightning" --format json', (err, stdout) ->
       cards = JSON.parse stdout
       eq cards.length, 34
       eq cards[22].name, 'Mountain'
@@ -648,8 +661,8 @@ describe '$ tutor card', ->
 
   it 'prints JSON representation of card specified by name',
     $ 'tutor card Fireball --format json', (err, stdout) ->
-      assert.strictEqual JSON.parse(stdout).name, 'Fireball'
+      eq JSON.parse(stdout).name, 'Fireball'
 
   it 'prints JSON representation of card specified by id',
     $ 'tutor card 987 --format json', (err, stdout) ->
-      assert.strictEqual JSON.parse(stdout).artist, 'Brian Snoddy'
+      eq JSON.parse(stdout).artist, 'Brian Snoddy'

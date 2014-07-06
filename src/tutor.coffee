@@ -1,4 +1,5 @@
 Q         = require 'q'
+_         = require 'underscore'
 
 gatherer  = require './gatherer'
 
@@ -13,32 +14,21 @@ tutor[name] = gatherer[name] for name in [
 ]
 
 tutor.card = (details, callback) ->
-  switch Object::toString.call details
-    when '[object Number]' then details = id: details
-    when '[object String]' then details = name: details
+  switch
+    when _.isNumber details then details = id: details
+    when _.isString details then details = name: details
 
-  d1 = Q.defer()
-  gatherer.card details, d1.makeNodeResolver()
-
-  d2 = Q.defer()
-  gatherer.languages details, d2.makeNodeResolver()
-
-  d3 = Q.defer()
-  gatherer.printings details, d3.makeNodeResolver()
-
-  Q.all [d1.promise, d2.promise, d3.promise]
+  Q.all _.map [gatherer.card, gatherer.languages, gatherer.printings], (fn) ->
+    deferred = Q.defer()
+    fn details, deferred.makeNodeResolver()
+    deferred.promise
   .then ([card, languages, {legality, versions}]) ->
     # If card.name and details.name differ, requests were redirected
     # (e.g. "Juzam Djinn" => "Juzám Djinn"). Resend requests with the
     # correct name to get languages, legality, and versions.
     if 'name' of details and card.name isnt details.name
-      clone = {}
-      clone[key] = value for key, value of details
-      clone.name = card.name
-      tutor.card clone, callback
+      tutor.card _.extend(_.omit(details, 'name'),
+                          _.pick(card, 'name')), callback
     else
-      card.languages = languages
-      card.legality = legality
-      card.versions = versions
-      callback null, card
+      callback null, _.extend {languages, legality, versions}, card
   .catch callback

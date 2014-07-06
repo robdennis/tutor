@@ -1,8 +1,8 @@
 cheerio     = require 'cheerio'
+_           = require 'underscore'
 
 gatherer    = require '../gatherer'
 languages   = require '../languages'
-load        = require '../load'
 pagination  = require '../pagination'
 
 
@@ -10,7 +10,7 @@ module.exports = (details, callback) ->
   $$ = (fn) -> (err, res, body) -> if err then callback err else fn body
 
   fetch 1, details, $$ (html) ->
-    {max} = pagination load(html) \
+    {max} = pagination cheerio.load(html) \
       '#ctl00_ctl00_ctl00_MainContent_SubContent_SubContent_languageList_pagingControls'
     if max is 1
       callback null, merge extract html
@@ -27,9 +27,9 @@ fetch = (page, details, callback) ->
   gatherer.request url, callback
 
 extract = (html) ->
-  $ = load html
-  $('tr.cardItem').toArray().map(cheerio).map ($tr) ->
-    [trans_card_name, language] = $tr.children()
+  $ = cheerio.load html
+  _.map $('tr.cardItem'), (el) ->
+    [trans_card_name, language] = $(el).children()
     $name = $(trans_card_name)
     code = languages[$(language).text().trim()]
     name = $name.text().trim()

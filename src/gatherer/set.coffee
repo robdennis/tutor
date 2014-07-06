@@ -1,156 +1,132 @@
 url         = require 'url'
 
+cheerio     = require 'cheerio'
 Q           = require 'q'
+_           = require 'underscore'
 
 gatherer    = require '../gatherer'
-load        = require '../load'
+rarities    = require '../rarities'
 supertypes  = require '../supertypes'
 
 
 module.exports = (name, callback) ->
+  common_params =
+    advanced: 'true'
+    set: """["#{name}"]"""
+    special: 'true'
 
-  d1 = Q.defer()
-  gatherer.request gatherer.url('/Pages/Search/Default.aspx',
-    action: 'advanced'
-    output: 'spoiler'
-    special: true
-    set: "[\"#{name}\"]"
-  ), d1.makeNodeResolver()
+  gatherer.request gatherer.url(
+    '/Pages/Search/Default.aspx'
+    _.extend output: 'checklist', common_params
+  ), (err, res) ->
+    if err?
+      callback err
+      return
 
-  d2 = Q.defer()
-  gatherer.request gatherer.url('/Pages/Search/Default.aspx',
-    set: "[\"#{name}\"]"
-    type: '+["Basic"]+["Land"]'
-  ), d2.makeNodeResolver()
+    $ = cheerio.load res.body
+    cards$ = _.map $('.cardItem'), (el) ->
+      get = (selector) -> $(el).find(selector).text()
 
-  Q.all [d1.promise, d2.promise]
-  .then ([body1, body2]) ->
-    basics = {}
+      color_indicator: get('.color')
+      name: get('.name')
+      rarity: rarities[get('.rarity')]
 
-    # > pattern.exec "Arabian Nights (Common)"
-    # ["Arabian Nights", "Arabian Nights"]
-    # > pattern.exec "Premium Deck Series: Fire and Lightning (Land)"
-    # ["Premium Deck Series: Fire and Lightning", "Fire and Lightning"]
-    pattern = /^(?:[^:]+: )?(.+)(?= [(]\w+[)]$)/
-    ids = ($container) ->
-      set = {}
-      $container.find('img').each ->
-        if (match = pattern.exec @attr('alt'))? and name in match
-          set[url.parse(@parent().attr('href'), yes).query.multiverseid] = 1
-      (+id for id of set)
-
-    # For sets with exactly one basic land, the "basic lands" search
-    # request is redirected. This is explained in more detail in #69.
-    $ = load body2
-    if ($items = $('.cardItem')).length then $items.each ->
-      basics[@find('.cardTitle').text().trim()] = ids @find('.setVersions')
-    else
-      basics[$('.contentTitle').text().trim()] = ids $('.cardDetails')
-
-    # Loop through the set's cards in reverse order. Each time a basic
-    # land is encountered, remove it from the array and insert all the
-    # set's versions of the card, sorted by Gatherer id, in its place.
-    set = extract body1, name
-    idx = set.length
-    while idx--
-      card = set[idx]
-      if card.name of basics
-        match = /multiverseid=(\d+)/.exec card.gatherer_url
-        clones = for id in basics[card.name]
-          clone = {}
-          clone[key] = value for key, value of card
-          clone.gatherer_url = card.gatherer_url.replace match[1], id
-          clone.image_url = card.image_url.replace match[1], id
-          clone
-        clones.sort (a, b) ->
-          if a.gatherer_url < b.gatherer_url then -1 else 1
-        set[idx..idx] = clones
-    callback null, set
-
-  .catch callback
+    Q.all _.map _.range(Math.ceil cards$.length / 25), (page) ->
+      deferred = Q.defer()
+      gatherer.request gatherer.url(
+        '/Pages/Search/Default.aspx'
+        _.extend output: 'standard', page: "#{page}", common_params
+      ), deferred.makeNodeResolver()
+      deferred.promise
+    .then (xs) ->
+      for [res] in xs
+        for card_name, versions of extract res.body, name
+          for card, idx in versions
+            card$ = (c$ for c$ in cards$ when c$.name is card_name)[idx]
+            _.extend card$, card
+            card$.expansion = name
+            color = card$.color_indicator
+            delete card$.color_indicator unless (
+              color is 'White' and not /W/.test(card$.mana_cost) or
+              color is 'Blue'  and not /U/.test(card$.mana_cost) or
+              color is 'Black' and not /B/.test(card$.mana_cost) or
+              color is 'Red'   and not /R/.test(card$.mana_cost) or
+              color is 'Green' and not /G/.test(card$.mana_cost)
+            )
+      callback null, cards$
+    .catch callback
 
   return
 
 extract = (html, name) ->
 
-  $ = load html
+  $ = cheerio.load html
   t = (el) -> gatherer._get_text $ el
 
-  cards = []
-  card = null
+  cards_mapping$ = {}
 
-  $('.textspoiler').find('tr').each ->
-    [first, second] = @children()
-    key = t first
-    val = t second
-    return unless val
-    switch key
-      when 'Name'
-        cards.push card unless card is null
-        [param] = /multiverseid=\d+/.exec $(second).find('a').attr('href')
-        card =
-          name: val
-          converted_mana_cost: 0
-          supertypes: []
-          types: []
-          subtypes: []
-          expansion: name
-          gatherer_url: "#{gatherer.origin}/Pages/Card/Details.aspx?#{param}"
-          image_url: "#{gatherer.origin}/Handlers/Image.ashx?#{param}&type=card"
-      when 'Cost:'
-        # 1(G/W)(G/W) -> {1}{G/W}{G/W} | 11 -> {11}
-        card.mana_cost = "{#{val.match(/// ./. | \d+ | [^()] ///g).join('}{')}}"
-        card.converted_mana_cost = to_converted_mana_cost card.mana_cost
-      when 'Type:'
-        [..., types, subtypes] = /^([^\u2014]+?)(?:\s+\u2014\s+(.+))?$/.exec val
-        for type in types.split(/\s+/)
-          card[if type in supertypes then 'supertypes' else 'types'].push type
-        if subtypes
-          card.subtypes = subtypes.split(/\s+/)
-      when 'Rules Text:'
-        # Though "{" precedes each of consecutive hybrid mana symbols
-        # in rules text, only the last is followed by "}". For example:
-        #
-        #   {(r/w){(r/w){(r/w)}
-        card.text = val
-        .replace /\n/g, '\n\n'
-        .replace /(?:[{][(][2WUBRG][/][WUBRG][)])+[}]/gi, (match) ->
-          match
-          .replace /[{][(]/g, '{'
-          .replace /[)][}]?/g, '}'
-          .toUpperCase()
-      when 'Color:'
-        card.color_indicator = val
-      when 'Pow/Tgh:'
-        pattern = ///^
-          [(]
-          ([^/]*(?:[{][^}]+[}])?) # power
-          /
-          ([^/]*(?:[{][^}]+[}])?) # toughness
-          [)]
-        $///
-        [..., power, toughness] = pattern.exec val
-        card.power = gatherer._to_stat power
-        card.toughness = gatherer._to_stat toughness
-      when 'Loyalty:'
-        card.loyalty = +/\d+/.exec(val)[0]
-      when 'Hand/Life:'
-        card.hand_modifier = +/Hand Modifier: ([-+]\d+)/.exec(val)[1]
-        card.life_modifier = +/Life Modifier: ([-+]\d+)/.exec(val)[1]
-      when 'Set/Rarity:'
-        card.versions = {}
-        for version in val.split(/,\s*/)
-          words = version.split(/\s+/)
-          rarity = words.pop()
-          if rarity is 'Rare' and words[words.length - 1] is 'Mythic'
-            rarity = 'Mythic Rare'
-            words.pop()
-          card.versions[words.join(' ')] = rarity
-        card.rarity = card.versions[name]
+  _.chain $('.cardItem').find('.setVersions').find('img')
+  .filter (el) -> $(el).attr('alt').indexOf("#{name} (") is 0
+  .each (el) ->
+    $el = $(el).closest('.cardItem')
+    $card_title = $el.find('.cardTitle')
+    [param] = /multiverseid=\d+/.exec $(el).parent().attr('href')
 
-  cards.push card
-  cards
+    card$ =
+      name: t $card_title
+      converted_mana_cost: 0
+      supertypes: []
+      types: []
+      subtypes: []
+      gatherer_url: "#{gatherer.origin}/Pages/Card/Details.aspx?#{param}"
+      image_url: "#{gatherer.origin}/Handlers/Image.ashx?#{param}&type=card"
 
+    mana_cost = t $el.find('.manaCost')
+    card$.mana_cost = mana_cost unless mana_cost is ''
+    card$.converted_mana_cost = to_converted_mana_cost mana_cost
+
+    [..., types, subtypes] =
+      /^([^\u2014]+?)(?:\s+\u2014\s+(.+))?$/m.exec t $el.find('.typeLine')
+    for type in types.split(/\s+/)
+      card$[if type in supertypes then 'supertypes' else 'types'].push type
+    if subtypes
+      card$.subtypes = subtypes.split(/\s+/)
+
+    card$.text = _.map($el.find('.rulesText').find('p'), t).join('\n\n')
+
+    match = ///
+      (Vanguard\s*)?
+      [(]
+      ([^/]*(?:[{][^}]+[}])?) # power | hand modifier
+      /
+      ([^/]*(?:[{][^}]+[}])?) # toughness | life modifier
+      [)]
+    $///.exec $el.find('.typeLine').text()
+    if match?
+      _.extend card$, _.object(
+        if match[1]?
+          ['hand_modifier', 'life_modifier']
+        else
+          ['power', 'toughness']
+        _.map match[2..3], gatherer._to_stat
+      )
+
+    match = /[(](\d+)[)]$/.exec $el.find('.typeLine').text()
+    if match?
+      card$.loyalty = +match[1]
+
+    card$.versions =
+      _.object _.map $el.find('.setVersions').find('img'), (el) ->
+        _.rest /^(.*) [(](.*?)[)]$/.exec $(el).attr('alt')
+
+    arr$ = cards_mapping$[card$.name] ?= []
+    arr$.push card$
+    arr$.sort (a, b) ->
+      aa = +url.parse(a.gatherer_url, yes).query.multiverseid
+      bb = +url.parse(b.gatherer_url, yes).query.multiverseid
+      if aa < bb then -1 else if aa > bb then 1 else 0
+
+  cards_mapping$
 
 converted_mana_costs =
   '{X}': 0, '{4}': 4, '{10}': 10, '{16}': 16, '{2/W}': 2,
